@@ -1,36 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# DeepResearch AI frontend
 
-## Getting Started
+The Next.js App Router frontend for DeepResearch AI. The FastAPI backend remains
+separate. Research and report screens use mock data; authentication uses the
+backend cookie-based auth API.
 
-First, run the development server:
+## Run locally
+
+Install dependencies and start the development server:
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000). Copy `.env.example` to
+`.env.local` and set `NEXT_PUBLIC_API_URL` to the backend origin (for example,
+`http://localhost:8000`).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Authentication
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The frontend calls `/api/v1/auth/register`, `/login`, `/me`, `/refresh`, and
+`/logout` on the configured API origin. Requests include credentials. The
+backend sets HttpOnly access and refresh cookies; the frontend does not persist
+tokens in web storage. Registration creates an account but does not sign it in,
+so the user signs in after registration.
 
-## Learn More
+The dashboard uses authenticated `GET /api/v1/research?page={page}&limit={limit}`
+for history and `POST /api/v1/research` with `{ query, depth }` to start research.
+Supported depths are `quick`, `standard`, and `comprehensive`.
 
-To learn more about Next.js, take a look at the following resources:
+## Project structure
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `src/app` — routes and global styles
+- `src/features` — feature-specific UI and behavior
+- `src/features/auth` — auth forms, API functions, hooks, and route protection
+- `src/components` — shared layout and shadcn/ui components
+- `src/hooks` — reusable client hooks
+- `src/providers` — theme and TanStack Query providers
+- `src/lib/api` — Axios client and API error normalization
+- `src/types` — shared TypeScript types
