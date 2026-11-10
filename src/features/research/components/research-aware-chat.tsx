@@ -24,6 +24,7 @@ import {
   normalizeConversationUsage,
   normalizeConversationCitations,
   conversationsApi,
+  type FeedbackRating,
   type ConversationMessage,
   type ConversationRecord,
   type ConversationScope,
@@ -38,6 +39,7 @@ import {
   useConversationMessages,
   useConversations,
   useCreateConversation,
+  useMessageFeedback,
   useResearchConversation,
 } from "@/features/research/hooks/use-conversations";
 import {
@@ -274,6 +276,11 @@ export function ResearchAwareChat({
   const [streamError, setStreamError] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [creationError, setCreationError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingFeedbackIds, setPendingFeedbackIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const pendingFeedbackRef = useRef(new Set<string>());
   const activeStream = useRef<AbortController | null>(null);
   const streamFinished = useRef(false);
   const streamErrorRef = useRef<string | null>(null);
@@ -296,6 +303,7 @@ export function ResearchAwareChat({
   );
   const conversationsQuery = useConversations("workspace");
   const createConversation = useCreateConversation();
+  const messageFeedback = useMessageFeedback();
   const workspaceItems = conversationsQuery.data ?? [];
   const selectedWorkspaceConversation =
     workspaceItems.find((item) => item.id === selectedConversationId) ??
@@ -327,6 +335,12 @@ export function ResearchAwareChat({
     },
     [],
   );
+
+  useEffect(() => {
+    if (!actionError) return;
+    const timeout = window.setTimeout(() => setActionError(null), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [actionError]);
 
   async function createWorkspaceConversation() {
     setCreationError(null);
@@ -526,6 +540,188 @@ export function ResearchAwareChat({
     }
   }
 
+  async function submitFeedback(messageId: string, rating: FeedbackRating) {
+    const conversation = activeConversation;
+    if (
+      !conversation ||
+      isStreaming ||
+      activeStream.current ||
+      pendingFeedbackRef.current.has(messageId)
+    ) {
+      return;
+    }
+    const message = cachedMessages.find((item) => item.id === messageId);
+    if (
+      message?.message_metadata?.feedback?.rating === rating ||
+      message?.role !== "assistant" ||
+      message.stream_state !== "complete"
+    ) {
+      return;
+    }
+
+    pendingFeedbackRef.current.add(messageId);
+    setPendingFeedbackIds((current) => new Set(current).add(messageId));
+    setActionError(null);
+    try {
+      await messageFeedback.mutateAsync({
+        conversationId: conversation.id,
+        messageId,
+        rating,
+      });
+    } catch (error) {
+      setActionError(getChatError(error));
+    } finally {
+      pendingFeedbackRef.current.delete(messageId);
+      setPendingFeedbackIds((current) => {
+        const next = new Set(current);
+        next.delete(messageId);
+        return next;
+      });
+    }
+  }
+
+  async function regenerateResponse(messageId: string) {
+    const conversation = activeConversation;
+    const originalMessage = cachedMessages.find(
+      (message) => message.id === messageId,
+    );
+    if (
+      !conversation ||
+      !originalMessage ||
+      originalMessage.role !== "assistant" ||
+      originalMessage.stream_state !== "complete" ||
+      isStreaming ||
+      activeStream.current ||
+      pendingFeedbackIds.has(messageId) ||
+      conversationQuery.isPending ||
+      conversationQuery.isError
+    ) {
+      return;
+    }
+
+    const controller = new AbortController();
+    activeStream.current = controller;
+    setIsStreaming(true);
+    setActionError(null);
+    let started = false;
+    let finished = false;
+    updateMessage(conversation.id, messageId, (message) => {
+      const metadata = { ...message.message_metadata };
+      delete metadata.feedback;
+      delete metadata.suggested_questions;
+      delete metadata.usage;
+      delete metadata.cost;
+      delete metadata.cost_details;
+      return {
+        ...message,
+        content: "",
+        citations: [],
+        message_metadata: metadata,
+        stream_state: "regenerating",
+        stream_error: undefined,
+      };
+    });
+
+    try {
+      await conversationsApi.regenerateMessage(
+        conversation.id,
+        messageId,
+        controller.signal,
+        (event: ConversationStreamEvent) => {
+          if (event.type === "regeneration_start") {
+            const assistantId = field(event.data, "assistant_message_id");
+            if (assistantId !== messageId) {
+              throw new Error(
+                "The regeneration response did not match the selected message.",
+              );
+            }
+            started = true;
+          } else if (event.type === "token") {
+            if (!started) {
+              throw new Error("The regeneration stream did not start correctly.");
+            }
+            const token = field(event.data, "content");
+            if (typeof token !== "string") {
+              throw new Error("The regeneration stream returned an invalid token.");
+            }
+            updateMessage(conversation.id, messageId, (message) => ({
+              ...message,
+              content: message.content + token,
+            }));
+          } else if (event.type === "citations") {
+            updateMessage(conversation.id, messageId, (message) => ({
+              ...message,
+              citations: normalizeConversationCitations(
+                field(event.data, "items"),
+              ),
+            }));
+          } else if (event.type === "usage") {
+            updateMessage(conversation.id, messageId, (message) => ({
+              ...message,
+              message_metadata: {
+                ...message.message_metadata,
+                usage: tokenUsage(event.data),
+              },
+            }));
+          } else if (event.type === "cost") {
+            const amount = field(event.data, "amount");
+            const details = field(event.data, "details");
+            updateMessage(conversation.id, messageId, (message) => ({
+              ...message,
+              message_metadata: {
+                ...message.message_metadata,
+                cost:
+                  typeof amount === "number" && Number.isFinite(amount)
+                    ? amount
+                    : null,
+                cost_details: isRecord(details) ? details : null,
+              },
+            }));
+          } else if (event.type === "message_complete") {
+            if (
+              !started ||
+              field(event.data, "assistant_message_id") !== messageId
+            ) {
+              throw new Error(
+                "The regeneration stream completed for an unexpected message.",
+              );
+            }
+            finished = true;
+            updateMessage(conversation.id, messageId, (message) => ({
+              ...message,
+              stream_state: "complete",
+              stream_error: undefined,
+            }));
+          } else if (event.type === "error") {
+            const message = field(event.data, "message");
+            throw new Error(
+              typeof message === "string"
+                ? message
+                : "Sorry, something went wrong while regenerating the response.",
+            );
+          }
+        },
+      );
+      if (!finished) {
+        throw new Error(
+          "The regeneration stream ended before the response was completed.",
+        );
+      }
+      await queryClient.invalidateQueries({
+        queryKey: conversationMessagesQueryKey(conversation.id),
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        await queryClient.invalidateQueries({ queryKey: authUserQueryKey });
+      }
+      updateMessage(conversation.id, messageId, () => originalMessage);
+      setActionError(getChatError(error));
+    } finally {
+      if (activeStream.current === controller) activeStream.current = null;
+      setIsStreaming(false);
+    }
+  }
+
   function submitMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     void sendMessage(draft);
@@ -582,6 +778,23 @@ export function ResearchAwareChat({
           : "mx-auto flex h-[min(720px,calc(100dvh-8rem))] min-h-[480px] max-w-6xl flex-col overflow-hidden rounded-xl border bg-background shadow-sm"
       }
     >
+      {actionError && (
+        <div
+          className="fixed bottom-4 right-4 z-[100] flex max-w-sm items-center gap-3 rounded-lg border border-destructive/25 bg-popover px-4 py-3 text-sm text-popover-foreground shadow-lg"
+          role="alert"
+        >
+          <span>{actionError}</span>
+          <Button
+            aria-label="Dismiss feedback error"
+            className="shrink-0"
+            onClick={() => setActionError(null)}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <X className="size-3.5" />
+          </Button>
+        </div>
+      )}
       {scope === "workspace" ? (
         <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] lg:grid-cols-[260px_minmax(0,1fr)] lg:grid-rows-1">
           <ChatSidebar
@@ -685,9 +898,16 @@ export function ResearchAwareChat({
             <div className="mx-auto max-w-3xl space-y-6">
               {visibleMessages.map((message) => (
                 <ChatMessage
-                  key={message.id}
+                  key={`${message.id}-${message.stream_state === "regenerating" ? "regenerating" : "stable"}`}
                   message={message}
                   onRetry={(content) => void sendMessage(content)}
+                  onSuggestedQuestion={(question) => void sendMessage(question)}
+                  onFeedback={(rating) =>
+                    void submitFeedback(message.id, rating)
+                  }
+                  onRegenerate={() => void regenerateResponse(message.id)}
+                  feedbackPending={pendingFeedbackIds.has(message.id)}
+                  actionsDisabled={isStreaming}
                 />
               ))}
               {streamError && (

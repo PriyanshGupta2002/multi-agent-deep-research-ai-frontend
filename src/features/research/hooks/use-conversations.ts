@@ -4,6 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authUserQueryKey } from "@/features/auth/hooks/use-auth";
 import {
   conversationsApi,
+  type FeedbackRating,
+  type MessageFeedback,
+  type ConversationMessage,
   type ConversationScope,
 } from "@/features/research/api/conversations-api";
 import type { ConversationCreateRequest } from "@/features/research/api/conversations-api";
@@ -131,5 +134,101 @@ export function useCreateConversation() {
       });
     },
     onError: (error) => invalidateAuthOnUnauthorized(queryClient, error),
+  });
+}
+
+type MessageFeedbackVariables = {
+  conversationId: string;
+  messageId: string;
+  rating: FeedbackRating;
+};
+
+function updateMessageFeedback(
+  messages: ConversationMessage[] | undefined,
+  messageId: string,
+  feedback: MessageFeedback | undefined,
+): ConversationMessage[] | undefined {
+  if (!messages) return messages;
+  return messages.map((message) => {
+    if (message.id !== messageId) return message;
+    const metadata = { ...message.message_metadata };
+    if (feedback) metadata.feedback = feedback;
+    else delete metadata.feedback;
+    return { ...message, message_metadata: metadata };
+  });
+}
+
+export function useMessageFeedback() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      conversationId,
+      messageId,
+      rating,
+    }: MessageFeedbackVariables) =>
+      conversationsApi.submitMessageFeedback(conversationId, messageId, rating),
+    onMutate: async ({ conversationId, messageId, rating }) => {
+      const queryKey = conversationMessagesQueryKey(conversationId);
+      await queryClient.cancelQueries({ queryKey });
+      const messages =
+        queryClient.getQueryData<ConversationMessage[]>(queryKey);
+      const previousFeedback = messages?.find(
+        (message) => message.id === messageId,
+      )?.message_metadata?.feedback;
+      const optimisticFeedback: MessageFeedback = {
+        rating,
+        updated_at: new Date().toISOString(),
+      };
+      queryClient.setQueryData<ConversationMessage[]>(queryKey, (current) =>
+        updateMessageFeedback(current, messageId, optimisticFeedback),
+      );
+      return {
+        queryKey,
+        messageId,
+        previousFeedback,
+        optimisticFeedback,
+      };
+    },
+    onError: async (error, _variables, context) => {
+      await invalidateAuthOnUnauthorized(queryClient, error);
+      if (!context) return;
+      queryClient.setQueryData<ConversationMessage[]>(
+        context.queryKey,
+        (current) => {
+          const currentFeedback = current?.find(
+            (message) => message.id === context.messageId,
+          )?.message_metadata?.feedback;
+          if (
+            currentFeedback?.rating !== context.optimisticFeedback.rating ||
+            currentFeedback.updated_at !==
+              context.optimisticFeedback.updated_at
+          ) {
+            return current;
+          }
+          return updateMessageFeedback(
+            current,
+            context.messageId,
+            context.previousFeedback,
+          );
+        },
+      );
+    },
+    onSuccess: (response, variables, context) => {
+      const messageId = response.message_id || variables.messageId;
+      queryClient.setQueryData<ConversationMessage[]>(
+        context?.queryKey ??
+          conversationMessagesQueryKey(variables.conversationId),
+        (current) => {
+          const message = current?.find((item) => item.id === messageId);
+          const updatedAt =
+            message?.message_metadata?.feedback?.updated_at ??
+            new Date().toISOString();
+          return updateMessageFeedback(current, messageId, {
+            rating: response.rating,
+            updated_at: updatedAt,
+          });
+        },
+      );
+    },
   });
 }

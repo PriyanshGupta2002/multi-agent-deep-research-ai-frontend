@@ -40,11 +40,21 @@ export type ConversationUsage = {
   total_tokens?: number | null;
 };
 
+export type FeedbackRating = "positive" | "negative";
+
+export type MessageFeedback = {
+  rating: FeedbackRating;
+  updated_at?: string;
+};
+
 export type ConversationMetadata = {
   model?: string | null;
   usage?: ConversationUsage | null;
   cost?: number | null;
   cost_details?: Record<string, unknown> | null;
+  suggested_questions?: string[];
+  feedback?: MessageFeedback;
+  [key: string]: unknown;
 };
 
 export type ConversationMessage = {
@@ -55,7 +65,7 @@ export type ConversationMessage = {
   citations: ConversationCitation[];
   message_metadata: ConversationMetadata | null;
   created_at: string;
-  stream_state?: "streaming" | "complete" | "error";
+  stream_state?: "streaming" | "regenerating" | "complete" | "error";
   retry_content?: string;
   stream_error?: string;
 };
@@ -63,6 +73,7 @@ export type ConversationMessage = {
 export type ConversationStreamEvent = {
   type:
     | "message_start"
+    | "regeneration_start"
     | "token"
     | "citations"
     | "usage"
@@ -70,6 +81,11 @@ export type ConversationStreamEvent = {
     | "message_complete"
     | "error";
   data: unknown;
+};
+
+export type MessageFeedbackResponse = {
+  message_id: string;
+  rating: FeedbackRating;
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -92,7 +108,7 @@ export function normalizeConversationUsage(
 
 function parseMetadata(value: unknown): ConversationMetadata | null {
   if (!isRecord(value)) return null;
-  const metadata: ConversationMetadata = {};
+  const metadata: ConversationMetadata = { ...value };
   if (typeof value.model === "string" || value.model === null) {
     metadata.model = value.model;
   }
@@ -103,6 +119,28 @@ function parseMetadata(value: unknown): ConversationMetadata | null {
     metadata.cost = null;
   }
   if (isRecord(value.cost_details)) metadata.cost_details = value.cost_details;
+  if (Array.isArray(value.suggested_questions)) {
+    metadata.suggested_questions = value.suggested_questions.filter(
+      (question): question is string =>
+        typeof question === "string" && question.trim().length > 0,
+    );
+  } else {
+    delete metadata.suggested_questions;
+  }
+  if (
+    isRecord(value.feedback) &&
+    (value.feedback.rating === "positive" ||
+      value.feedback.rating === "negative")
+  ) {
+    metadata.feedback = {
+      rating: value.feedback.rating,
+      ...(typeof value.feedback.updated_at === "string"
+        ? { updated_at: value.feedback.updated_at }
+        : {}),
+    };
+  } else {
+    delete metadata.feedback;
+  }
   return metadata;
 }
 
@@ -200,6 +238,7 @@ function parseSseFrame(frame: string): ConversationStreamEvent | undefined {
   const type = eventType ?? record?.type ?? record?.event;
   if (
     type !== "message_start" &&
+    type !== "regeneration_start" &&
     type !== "token" &&
     type !== "citations" &&
     type !== "usage" &&
@@ -255,6 +294,42 @@ function errorMessage(payload: unknown, fallback: string): string {
   return fallback;
 }
 
+async function streamEvents(
+  path: string,
+  signal: AbortSignal,
+  onEvent: (event: ConversationStreamEvent) => void,
+  options: { body?: string; fallback: string },
+): Promise<void> {
+  const baseURL =
+    apiClient.defaults.baseURL ||
+    (typeof window === "undefined" ? "" : window.location.origin);
+  const response = await fetch(new URL(path, baseURL), {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      Accept: "text/event-stream",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(options.body ? { body: options.body } : {}),
+    signal,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    let payload: unknown = text;
+    try {
+      payload = JSON.parse(text) as unknown;
+    } catch {
+      // Preserve the plain-text server error.
+    }
+    throw new ApiError(errorMessage(payload, options.fallback), response.status);
+  }
+  if (!response.body) {
+    throw new Error("The streaming response did not include a readable body.");
+  }
+  for await (const event of parseSSEStream(response.body)) onEvent(event);
+}
+
 export const conversationsApi = {
   async list(
     scope?: ConversationScope,
@@ -305,6 +380,27 @@ export const conversationsApi = {
     return parseMessages(data);
   },
 
+  async submitMessageFeedback(
+    conversationId: string,
+    messageId: string,
+    rating: FeedbackRating,
+  ): Promise<MessageFeedbackResponse> {
+    const { data } = await apiClient.post<unknown>(
+      `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/feedback`,
+      { rating },
+    );
+    if (
+      !isRecord(data) ||
+      typeof data.message_id !== "string" ||
+      data.message_id !== messageId ||
+      (data.rating !== "positive" && data.rating !== "negative") ||
+      data.rating !== rating
+    ) {
+      throw new Error("The message feedback response has an unexpected format.");
+    }
+    return { message_id: data.message_id, rating: data.rating };
+  },
+
   async findOrCreateResearch(researchId: string): Promise<ConversationRecord> {
     let page = 1;
     while (true) {
@@ -329,33 +425,21 @@ export const conversationsApi = {
     onEvent: (event: ConversationStreamEvent) => void,
   ): Promise<void> {
     const path = `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages/stream`;
-    const baseURL =
-      apiClient.defaults.baseURL ||
-      (typeof window === "undefined" ? "" : window.location.origin);
-    const response = await fetch(new URL(path, baseURL), {
-      method: "POST",
-      credentials: "include",
-      headers: {
-        Accept: "text/event-stream",
-        "Content-Type": "application/json",
-      },
+    await streamEvents(path, signal, onEvent, {
       body: JSON.stringify({ content }),
-      signal,
+      fallback: "Could not send your message.",
     });
+  },
 
-    if (!response.ok) {
-      const text = await response.text();
-      let payload: unknown = text;
-      try {
-        payload = JSON.parse(text) as unknown;
-      } catch {
-        // Preserve the plain-text server error.
-      }
-      throw new ApiError(errorMessage(payload, "Could not send your message."), response.status);
-    }
-    if (!response.body) {
-      throw new Error("The streaming response did not include a readable body.");
-    }
-    for await (const event of parseSSEStream(response.body)) onEvent(event);
+  async regenerateMessage(
+    conversationId: string,
+    messageId: string,
+    signal: AbortSignal,
+    onEvent: (event: ConversationStreamEvent) => void,
+  ): Promise<void> {
+    const path = `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/regenerate`;
+    await streamEvents(path, signal, onEvent, {
+      fallback: "Could not regenerate the response.",
+    });
   },
 };

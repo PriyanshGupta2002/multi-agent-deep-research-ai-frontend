@@ -13,12 +13,23 @@ import {
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
-import { Bot, Check, Copy, RotateCw, UserRound } from "lucide-react";
+import {
+  Bot,
+  Check,
+  Copy,
+  LoaderCircle,
+  RefreshCw,
+  RotateCw,
+  ThumbsDown,
+  ThumbsUp,
+  UserRound,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type {
   ConversationCitation,
   ConversationMessage as ConversationMessageRecord,
   ConversationUsage,
+  FeedbackRating,
 } from "@/features/research/api/conversations-api";
 
 function getPlainText(value: ReactNode): string {
@@ -300,9 +311,19 @@ function CodeBlock({ children }: { children: ReactNode }) {
 export function ChatMessage({
   message,
   onRetry,
+  onSuggestedQuestion,
+  onFeedback,
+  onRegenerate,
+  feedbackPending = false,
+  actionsDisabled = false,
 }: {
   message: ConversationMessageRecord;
   onRetry?: (content: string) => void;
+  onSuggestedQuestion?: (question: string) => void;
+  onFeedback?: (rating: FeedbackRating) => void;
+  onRegenerate?: () => void;
+  feedbackPending?: boolean;
+  actionsDisabled?: boolean;
 }) {
   const isAssistant = message.role === "assistant";
   const citationMap = useMemo(
@@ -388,6 +409,20 @@ export function ChatMessage({
   }, [citationMap, message.id]);
   const metadata = message.message_metadata;
   const usage = metadata?.usage ?? null;
+  const suggestedQuestions =
+    isAssistant && message.stream_state === "complete"
+      ? (metadata?.suggested_questions ?? [])
+          .filter(
+            (question): question is string =>
+              typeof question === "string" && question.trim().length > 0,
+          )
+          .slice(0, 3)
+      : [];
+  const canGiveFeedback =
+    isAssistant &&
+    message.stream_state === "complete" &&
+    !message.id.startsWith("local-assistant-");
+  const selectedRating = metadata?.feedback?.rating;
   const isTyping =
     isAssistant && visibleContent.length < message.content.length;
 
@@ -428,6 +463,15 @@ export function ChatMessage({
                   className="ml-1 inline-block h-4 w-1 animate-pulse rounded-sm bg-primary align-middle"
                   role="status"
                 />
+              )}
+              {message.stream_state === "regenerating" && (
+                <span
+                  className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"
+                  role="status"
+                >
+                  <LoaderCircle className="size-3.5 animate-spin" />
+                  Regenerating response…
+                </span>
               )}
             </div>
           ) : (
@@ -489,6 +533,89 @@ export function ChatMessage({
               <CopyButton label="Copy answer" value={message.content} />
             </div>
           )}
+        {suggestedQuestions.length > 0 && onSuggestedQuestion && (
+          <div
+            aria-label="Suggested follow-up questions"
+            className="mt-3 flex flex-wrap gap-1.5 px-1"
+            role="group"
+          >
+            {suggestedQuestions.map((question, index) => (
+              <button
+                className="rounded-full border bg-muted/40 px-2.5 py-1 text-left text-[11px] leading-4 text-muted-foreground transition-colors hover:border-primary/30 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
+                disabled={
+                  message.stream_state !== "complete" || actionsDisabled
+                }
+                key={`${question}-${index}`}
+                onClick={() => onSuggestedQuestion(question)}
+                type="button"
+              >
+                {question}
+              </button>
+            ))}
+          </div>
+        )}
+        {canGiveFeedback && (onFeedback || onRegenerate) && (
+          <div className="mt-2 flex items-center gap-1 px-1">
+            {onFeedback && (
+              <>
+                <Button
+                  aria-label="Helpful"
+                  aria-pressed={selectedRating === "positive"}
+                  className={
+                    selectedRating === "positive"
+                      ? "text-emerald-600 [&_svg]:fill-current dark:text-emerald-400"
+                      : "text-muted-foreground"
+                  }
+                  disabled={
+                    actionsDisabled ||
+                    feedbackPending ||
+                    selectedRating === "positive" ||
+                    !message.id
+                  }
+                  onClick={() => onFeedback("positive")}
+                  size="icon-xs"
+                  title="Helpful"
+                  variant="ghost"
+                >
+                  <ThumbsUp className="size-3.5" />
+                </Button>
+                <Button
+                  aria-label="Not helpful"
+                  aria-pressed={selectedRating === "negative"}
+                  className={
+                    selectedRating === "negative"
+                      ? "text-destructive [&_svg]:fill-current"
+                      : "text-muted-foreground"
+                  }
+                  disabled={
+                    actionsDisabled ||
+                    feedbackPending ||
+                    selectedRating === "negative" ||
+                    !message.id
+                  }
+                  onClick={() => onFeedback("negative")}
+                  size="icon-xs"
+                  title="Not helpful"
+                  variant="ghost"
+                >
+                  <ThumbsDown className="size-3.5" />
+                </Button>
+              </>
+            )}
+            {onRegenerate && (
+              <Button
+                aria-label="Regenerate response"
+                disabled={actionsDisabled || !message.id}
+                onClick={onRegenerate}
+                size="icon-xs"
+                title="Regenerate response"
+                variant="ghost"
+              >
+                <RefreshCw className="size-3.5" />
+              </Button>
+            )}
+          </div>
+        )}
       </div>
     </article>
   );
