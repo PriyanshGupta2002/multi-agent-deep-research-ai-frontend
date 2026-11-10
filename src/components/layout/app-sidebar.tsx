@@ -6,6 +6,7 @@ import {
   BookOpenCheck,
   Clock3,
   LayoutDashboard,
+  MessageSquareText,
   Plus,
   ScrollText,
   Settings2,
@@ -23,6 +24,7 @@ type NavigationItem = {
 const navigationItems: NavigationItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/history", label: "Research history", icon: Clock3 },
+  { href: "/chat", label: "Workspace Chat", icon: MessageSquareText },
   { href: "/saved-reports", label: "Saved reports", icon: ScrollText },
   { href: "/settings", label: "Settings", icon: Settings2 },
 ];

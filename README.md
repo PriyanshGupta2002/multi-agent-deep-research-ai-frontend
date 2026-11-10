@@ -82,6 +82,7 @@ All paths below are relative to `NEXT_PUBLIC_API_URL`.
 | Authentication | `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, `GET /api/v1/auth/me`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout` |
 | Research | `GET` and `POST /api/v1/research`; `GET /api/v1/research/{research_id}`, `/tasks`, `/sources`, `/report`; `POST /api/v1/research/{research_id}/cancel` |
 | Live updates | `GET /api/v1/research/{research_id}/events` (SSE) |
+| Conversations | `GET` and `POST /api/v1/conversations`; `GET /api/v1/conversations/{conversation_id}`, `/messages`; `POST /api/v1/conversations/{conversation_id}/messages/stream` (SSE) |
 | Saved Reports | `GET` and `POST /api/v1/saved-reports`; `GET /api/v1/saved-reports/{research_id}/status`; `DELETE /api/v1/saved-reports/{research_id}` |
 
 Research depth values are `quick`, `standard`, and `comprehensive`. Authentication
@@ -125,8 +126,9 @@ src/
 
 Feature API functions use the shared Axios client. TanStack Query hooks own
 request state and cache invalidation; UI components should use those hooks
-instead of issuing duplicate requests. SSE is handled separately with native
-`EventSource`.
+instead of issuing duplicate requests. Research live updates use native
+`EventSource`; conversation responses use credentialed `POST` fetch streaming
+because the message endpoint accepts a request body.
 
 ## Troubleshooting
 

@@ -34,6 +34,7 @@ import {
 } from "@/features/research/hooks/use-researches";
 import { useResearchEvents } from "@/features/research/hooks/use-research-events";
 import { SaveReportButton } from "@/features/saved-reports/components/save-report-button";
+import { ResearchChatLink } from "@/features/research/components/research-chat-link";
 import { getResearchErrorMessage } from "@/features/research/research-errors";
 import {
   describeResearchEvent,
@@ -1317,29 +1318,35 @@ export function ResearchWorkspaceLive({ researchId }: { researchId: string }) {
               </span>
             </div>
           </div>
-          <Button
-            className="w-full shrink-0 sm:w-auto"
-            disabled={!canCancel || cancelResearch.isPending}
-            onClick={() => {
-              setCancelError(null);
-              cancelResearch.mutate(research.id, {
-                onError: (error) => {
-                  setCancelError(error);
-                  void researchQuery.refetch();
-                },
-              });
-            }}
-            variant="outline"
-          >
-            <Pause className="size-4" />
-            {cancelResearch.isPending
-              ? "Cancelling…"
-              : research.status === "cancelled"
-                ? "Research cancelled"
-                : canCancel
-                  ? "Cancel research"
-                  : "Research ended"}
-          </Button>
+          <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:flex-row">
+            <ResearchChatLink
+              available={research.status === "completed"}
+              researchId={research.id}
+            />
+            <Button
+              className="w-full shrink-0 sm:w-auto"
+              disabled={!canCancel || cancelResearch.isPending}
+              onClick={() => {
+                setCancelError(null);
+                cancelResearch.mutate(research.id, {
+                  onError: (error) => {
+                    setCancelError(error);
+                    void researchQuery.refetch();
+                  },
+                });
+              }}
+              variant="outline"
+            >
+              <Pause className="size-4" />
+              {cancelResearch.isPending
+                ? "Cancelling…"
+                : research.status === "cancelled"
+                  ? "Research cancelled"
+                  : canCancel
+                    ? "Cancel research"
+                    : "Research ended"}
+            </Button>
+          </div>
         </div>
         {cancelError && (
           <p

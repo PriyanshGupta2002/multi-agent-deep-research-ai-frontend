@@ -12,6 +12,7 @@ const pageTitles: Record<string, string> = {
   "/": "Overview",
   "/new-research": "New research",
   "/history": "Research history",
+  "/chat": "Workspace Chat",
   "/saved-reports": "Saved reports",
   "/settings": "Settings",
   "/research": "Research",

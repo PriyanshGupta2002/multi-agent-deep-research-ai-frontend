@@ -11,6 +11,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { ReportMarkdown } from "@/features/research/components/report-markdown";
 import { ReportSources } from "@/features/research/components/report-sources";
 import { SaveReportButton } from "@/features/saved-reports/components/save-report-button";
+import { ResearchChatLink } from "@/features/research/components/research-chat-link";
 import type {
   ResearchRecord,
   ResearchReportRecord,
@@ -104,6 +105,7 @@ export function ReportReader({
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
+            <ResearchChatLink label="Ask AI" researchId={researchId} />
             <SaveReportButton
               canSave={research?.status === "completed"}
               researchId={researchId}

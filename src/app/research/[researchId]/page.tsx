@@ -5,6 +5,8 @@ type ResearchPageProps = {
   params: Promise<{ researchId: string }>;
 };
 
+export const instant = false;
+
 async function ResearchContent({ params }: ResearchPageProps) {
   const { researchId } = await params;
   return <ResearchWorkspaceLive researchId={researchId} />;
